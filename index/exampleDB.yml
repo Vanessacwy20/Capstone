@@ -1,0 +1,33 @@
+
+# Tables and columns
+
+- table: Users
+  columns:
+    User_ID: {key: yes}
+    User_Name:
+    User_Phone:
+    User_Email:
+    User_Address:
+    User_Country:
+    User_Gender:
+
+- table: Orders
+  columns:
+    Order_ID: {key: yes}
+    User_ID: {ref: Users}
+    Product_ID: {ref: Products}
+    Product_Quantity:
+    Order_Date:
+    Order_Time:
+
+- table: Products
+  columns:
+    Product_ID: {key: yes}
+    Product_Name:
+    Product_Price:
+    Product_Description:
+    Product_Category:
+    Product_Image:
+    Product_Rating:
+    Product_RatingCount:
+

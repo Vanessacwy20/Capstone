@@ -1,0 +1,1883 @@
+---
+title: "Learn Data"
+output: 
+  learnr::tutorial:
+    progressive: true
+    allow_skip: true
+runtime: shiny_prerendered
+# editor_options:
+#   preview: viewer
+description: "Learn how to use gradethis to provide automated, personalized, formative feedback to student answers in learnr tutorials."
+---
+
+```{r data, include=FALSE}
+CurrentUser <- reactiveValues()
+CurrentQuestion <- reactiveValues()
+Question1Text <- reactiveValues()
+Question2Text <- reactiveValues()
+ExcelData <- reactiveValues()
+GenerateAnswer <- reactiveValues()
+```
+
+```{r setup, include=FALSE}
+library(learnr)
+library(tidyverse)
+library(xlsx)
+library(shinyauthr)
+library(RSQLite)
+library(DBI)
+library(datamodelr)
+library(rpivotTable)
+library(DT)
+
+knitr::opts_chunk$set(echo = TRUE)
+
+
+file_path <- "exampleDB.yml"
+dm <- dm_read_yaml(file_path)
+
+my_colors <-
+  dm_color_scheme(
+    purple = dm_palette(
+      line_color = "#8064A2",
+      header_bgcolor = "#B1A0C7",
+      header_font = "#FFFFFF",
+      bgcolor = "#E4DFEC"
+    ),
+    red = dm_palette(
+      line_color = "#C0504D",
+      header_bgcolor = "#DA9694",
+      header_font = "#FFFFFF",
+      bgcolor = "#F2DCDB"
+    )
+)
+
+dm_add_colors(my_colors)
+
+dm <- dm_set_display(dm, display = list(
+  red = "Orders",
+  purple = "Products"
+))
+
+User <- read.csv(file = 'Data/UserData.csv')
+Product <- read.csv(file = 'Data/ProductData.csv')
+Order <- read.csv(file = 'Data/OrderData.csv')
+head(User)
+## Create an ephemeral in-memory RSQLite database
+db <- dbConnect(RSQLite::SQLite(), ":memory:")
+dbWriteTable(db, "Users", User, overwrite=T)
+dbWriteTable(db, "Products", Product, overwrite=T)
+dbWriteTable(db, "Orders", Order, overwrite=T)
+
+knitr::opts_chunk$set(connection = "db")
+knitr::opts_chunk$set(echo = FALSE)
+
+
+CurrentLocation <- getwd()
+LoggingExcel <- gsub("/","//",paste(CurrentLocation,"QuickCheckLog.xlsx", sep = "/"))
+ExerciseLoggingExcel <- gsub("/","//",paste(CurrentLocation,"ExerciseLog.xlsx", sep = "/"))
+SolutionXlsxLocation <- gsub("/","//",paste(CurrentLocation,"Question_Solution.xlsx", sep = "/"))
+
+SolutionXlsx <- read.xlsx(SolutionXlsxLocation, 1)
+HintXlsx <- read.xlsx(SolutionXlsxLocation, 2)
+QuestionXlsx <- read.xlsx(SolutionXlsxLocation, 3)
+QuestionAnswerXlsx <- read.xlsx(SolutionXlsxLocation, 4)
+
+
+if (file.exists(LoggingExcel)){
+  obsE <- observe({ExcelData$StudentMarks <- read.xlsx(LoggingExcel, 1)})
+}
+
+if (file.exists(ExerciseLoggingExcel)){
+  obsEx <- observe({ExcelData$StudentExerciseMarks <- read.xlsx(ExerciseLoggingExcel, 1)})
+}
+
+
+obsQ <- observe({
+  CurrentQuestion$No <- QuestionXlsx[1,1]
+  CurrentQuestion$Type <- QuestionXlsx[1,2]
+  CurrentQuestion$Text <- QuestionXlsx[1,3]
+  CurrentQuestion$Answer <- ""
+  CurrentQuestion$Output <- ""
+  CurrentQuestion$ExerciseID <- paste(CurrentUser$user, "_", Sys.time())
+  CurrentQuestion$Result <- 0
+  CurrentQuestion$MCList <- QuestionXlsx[1,4]
+})
+
+Reset_Quiz <- function() {
+ CurrentQuestion$No <- QuestionXlsx[1,1]
+  CurrentQuestion$Type <- QuestionXlsx[1,2]
+  CurrentQuestion$Text <- QuestionXlsx[1,3]
+  CurrentQuestion$Answer <- ""
+  CurrentQuestion$Output <- ""
+  CurrentQuestion$ExerciseID <- paste(CurrentUser$user, "_", Sys.time())
+  CurrentQuestion$Result <- 0
+  CurrentQuestion$MCList <- QuestionXlsx[1,4]
+}
+
+obsQ <- observe({
+  
+  Question1Text$ErrorLog <- "Please try this example!"
+  Question2Text$ErrorLog <- "Please try this example!"
+
+
+})
+
+tutorial_options(exercise.eval = FALSE)
+new_recorder <- function(tutorial_id, tutorial_version, user_id, event, data) {
+
+  if (grepl("CodeAnswerGenerator",data$label, fixed = TRUE)){
+    GenerateAnswer$Code <- gsub("\n", "", data$output)
+  }
+  
+  if (grepl("Question",data$label, fixed = TRUE)){
+  QSolution <- SolutionXlsx[SolutionXlsx[,"Question_ID"] == data$label,]["Solution"]
+  
+  LogUser <-  isolate(toString(CurrentUser$user[1][1]))
+  
+  Mark <- "0"
+  
+  QAnswer <- gsub(" ", "", gsub("\n", "", data$code))
+  AllSolution <- ""
+  
+
+  for (i in 1:nrow(QSolution)){
+    AllSolution <- paste(AllSolution,QSolution[i,],sep=",")
+        print(QSolution[i,])
+        print(QAnswer)
+  
+      if (QSolution[i,] == QAnswer){
+        Mark <- "10"
+      }
+  }
+  
+  # Log to excel file
+  if (file.exists(LoggingExcel) == FALSE){
+      newDf <-  data.frame(User=c(LogUser),QuestionNo=c(data$label),Solution=c(AllSolution),Answer=c(QAnswer),Time=c(Sys.time()),Marks=c(Mark))
+
+    }else{
+      Df <-  data.frame(User=c(LogUser),QuestionNo=c(data$label),Solution=c(AllSolution),Answer=c(QAnswer),Time=c(Sys.time()),Marks=c(Mark))
+      xlsxDf <- read.xlsx(LoggingExcel, 1)  # read first sheet
+      Df2 <-  subset( xlsxDf, select = -1 )
+      
+      
+      newDf <- rbind(Df, Df2)
+      unlink(LoggingExcel)
+ 
+    }
+  
+  
+    if (grepl("Question1",data$label, fixed = TRUE)){
+      obsQ <- observe({Question1Text$ErrorLog <- "Good try! Please try again."})
+    }else{
+      obsQ <- observe({Question2Text$ErrorLog <- "Good try! Please try again."})
+    }
+    
+    
+  
+    if (Mark == "10"){
+      if (grepl("Question1",data$label, fixed = TRUE)){
+        obsQ <- observe({Question1Text$ErrorLog <- "Correct!"})
+        }else{
+          obsQ <- observe({Question2Text$ErrorLog <- "Correct!"})
+        }
+    }else{
+      
+      HintString <- toString(HintXlsx[HintXlsx[,"Question_ID"] == data$label & HintXlsx[,"Answer"] == QAnswer,]["Hint"])
+      
+      if (HintString != "character(0)"){
+        if (grepl("Question1",data$label, fixed = TRUE)){
+          obsQ <- observe({Question1Text$ErrorLog <- HintString})
+        }else{
+          obsQ <- observe({Question2Text$ErrorLog <- HintString})
+        }
+        
+      }
+      
+          
+    }
+
+  
+  
+  write.xlsx(newDf, LoggingExcel, sheetName = "Sheet1", append = TRUE)
+  
+  obsE <- observe({ExcelData$StudentMarks <- read.xlsx(LoggingExcel, 1)})
+  obsEx <- observe({ExcelData$StudentExerciseMarks <- read.xlsx(ExerciseLoggingExcel, 1)})
+}
+   
+  
+  if (grepl("Exercise",data$label, fixed = TRUE)){
+    
+    QAnswer <- gsub("\n", "", data$code)
+    QOutput <- gsub("\n", "", data$output)
+    CurrentQuestion$Answer <- QAnswer
+    CurrentQuestion$Output <- QOutput
+    
+    
+  }
+  
+}
+
+options(tutorial.event_recorder = new_recorder)
+
+# User Settings
+
+user_base <- tibble::tibble(
+  user = c("admin", "user1","user2","user3","user4","user5","user6","user7"),
+  password = sapply(c("admin", "p1","p2","p3","p4","p5","p6","p7"), sodium::password_store),
+  permissions = c("admin", "standard","standard","standard","standard","standard","standard","standard"),
+  name = c("admin", "Issac Derrick","Kay Devine","Kathy Maxwell","Katherine Aguirre","Alice Barnett","Olivia Beck","Alex Mccray")
+)
+
+
+
+list_to_string <- function(obj, listname) {
+  if (is.null(names(obj))) {
+    paste(listname, "[[", seq_along(obj), "]] = ", obj, sep = "", collapse = "\n")
+  }
+}
+
+WriteToXlsx <- function(QNo,EID,User,Answer,Mark,check) {
+  
+  print("IN")
+  print(Mark)
+  print(EID)
+  print(User)
+  print(Answer)
+  print(Mark)
+  
+
+  if (file.exists(ExerciseLoggingExcel) == FALSE){
+      newDf <-  data.frame(ExerciseID=c(EID),User=c(User),QuestionNo=c(QNo),Answer=c(Answer),Time=c(Sys.time()),Marks=c(Mark),Checked=c(check))
+
+    }else{
+      Df <-  data.frame(ExerciseID=c(EID),User=c(User),QuestionNo=c(QNo),Answer=c(Answer),Time=c(Sys.time()),Marks=c(Mark),Checked=c(check))
+      xlsxDf <- read.xlsx(ExerciseLoggingExcel, 1)  # read first sheet
+      Df2 <-  subset( xlsxDf, select = -1 )
+      
+      
+      newDf <- rbind(Df, Df2)
+      
+      unlink(ExerciseLoggingExcel)
+ 
+    }
+  
+  write.xlsx(newDf, ExerciseLoggingExcel, sheetName = "Sheet2", append = TRUE)
+  
+  
+}
+
+RefreshExerciseTable <- function() {
+  
+  obsE <- observe({ExcelData$StudentMarks <- read.xlsx(LoggingExcel, 1)})
+  obsEx <- observe({ExcelData$StudentExerciseMarks <- read.xlsx(ExerciseLoggingExcel, 1)})
+  
+}
+
+Go_To_Next_Q <- function(No) {
+  
+  print(CurrentQuestion)
+  QSolution <- QuestionAnswerXlsx[QuestionAnswerXlsx[,"Question_ID"] == CurrentQuestion$No,]["Solution"]
+  QMark <- QuestionAnswerXlsx[QuestionAnswerXlsx[,"Question_ID"] == CurrentQuestion$No,]["Marks"]
+  
+  
+  if (CurrentQuestion$Type == "Coding"){
+    QAnswer <- CurrentQuestion$Output
+  }else if (CurrentQuestion$Type == "PivotTable"){
+    QAnswer <- CurrentQuestion$Answer
+  }else if (CurrentQuestion$Type == "MC"){
+    QAnswer <- CurrentQuestion$Answer
+  }
+  
+  Mark <- 0
+  
+  print(QAnswer)
+  
+  print(QSolution)
+  
+  
+  if (nrow(QSolution) > 0){
+     for (i in 1:nrow(QSolution)){
+        print(QSolution[i,])
+          if (QSolution[i,] == QAnswer){
+            Mark <- QMark[i,]
+          }
+      }
+  }
+  
+  if (CurrentQuestion$Type == "Coding"){
+    QAnswer <- CurrentQuestion$Answer
+  }
+  
+  Check <- "Yes"
+  
+  if (Mark != 10){
+    Check <- "No"
+  }
+  
+  WriteToXlsx(No,CurrentQuestion$ExerciseID,toString(CurrentUser$user),QAnswer,Mark,Check)
+  
+  CurNo <- which(QuestionXlsx$Question == No)
+  NextNo <- CurNo + 1
+  print(QuestionXlsx[NextNo,1])
+  CurrentQuestion$No <- QuestionXlsx[NextNo,1]
+  CurrentQuestion$Type <- QuestionXlsx[NextNo,2]
+  CurrentQuestion$Text <- QuestionXlsx[NextNo,3]
+  CurrentQuestion$Result <- CurrentQuestion$Result + Mark
+  CurrentQuestion$MCList <- QuestionXlsx[NextNo,4]
+  print(CurrentQuestion$Answer)
+  print(CurrentQuestion$ExerciseID)
+  
+}
+
+
+```
+
+```{css, echo=FALSE}
+.shiny-datatable-output .row:nth-child(2){
+  overflow-x: scroll;
+}
+
+#mypivot, #PivotTable, #AdminPivotTableTool {
+  overflow: scroll;
+  
+}
+
+.btn-primary{
+  background-color: #8CCCA6;
+}
+.btn-primary:hover{
+  background-color: #71B68D;
+    color: white;
+}
+
+.btn-primary:focus, .btn-primary:visited, .btn-primary:active{
+  background-color: #71B68D;
+  color: white;
+}
+
+.btn-success{
+  background-color: #FF9F98;
+}
+.btn-success:hover{
+  background-color: #B99898;
+}
+
+.btn-success:focus{
+  background-color: #B99898;
+}
+
+.btn-success:active{
+  background-color: #B99898;
+}
+
+a{
+  color: #A99393;
+}
+
+a:hover{
+  color: #1F1F1F;
+}
+
+li.active a{
+  background: #8CCCA6;
+}
+
+.talk-bubble {
+	margin: 40px;
+  display: inline-block;
+  position: relative;
+	width: 90%;
+	height: auto;
+	background-color: #C2ADAD;
+}
+
+.border{
+  border: 3px solid #666;
+}
+.round{
+  border-radius: 10px;
+	-webkit-border-radius: 30px;
+	-moz-border-radius: 30px;
+
+}
+
+.tri-right.border.left-top:before {
+	content: ' ';
+	position: absolute;
+	width: 0;
+	height: 0;
+  left: -40px;
+	right: auto;
+  top: -8px;
+	bottom: auto;
+	border: 32px solid;
+	border-color: #666 transparent transparent transparent;
+}
+.tri-right.left-top:after{
+	content: ' ';
+	position: absolute;
+	width: 0;
+	height: 0;
+  left: -20px;
+	right: auto;
+  top: 0px;
+	bottom: auto;
+	border: 22px solid;
+	border-color: #C2ADAD transparent transparent transparent;
+}
+
+.talktext{
+  padding :20px;
+  color: white;
+}
+
+#Question1text, #Question2text{
+  background-color: #ffe699;
+  color:#78652c;
+  border-color: #78652c;
+}
+
+```
+
+
+## Login
+
+
+
+```{r, context="render", echo=FALSE}
+ # logout button
+  div(class = "pull-right", shinyauthr::logoutUI(id = "logout"))
+  
+  # login section
+  shinyauthr::loginUI(id = "login")
+  
+uiOutput("sidebarpanel")
+
+textOutput("CurrentUser")
+
+```
+
+```{r, context="server"}
+credentials <- shinyauthr::loginServer(
+    id = "login",
+    data = user_base,
+    user_col = user,
+    pwd_col = password,
+    sodium_hashed = TRUE,
+    log_out = reactive(logout_init())
+  )
+  
+  # Logout to hide
+  logout_init <- shinyauthr::logoutServer(
+    id = "logout",
+    active = reactive(credentials()$user_auth)
+  )
+  
+ output$CurrentUser <- renderText({ 
+     toString(credentials()$info["user"][1])
+  })
+ 
+  obsC <- observe({
+    
+    CurrentUser$user <- credentials()$info["user"][1]
+    print(CurrentUser)
+    
+  })
+  
+   output$sidebarpanel <- renderUI({
+    
+    # Show only when authenticated
+    req(credentials()$user_auth)
+    
+
+    
+   
+    
+    column(width = 4,
+           p(paste("You have", credentials()$info[["permissions"]],"permission"))
+    )
+    
+    
+  })
+
+
+    
+
+```
+
+## Introduction
+
+### Importance of Data
+
+When we make a discussion, it often matters with data.
+
+For example, when we buy things, we would decides on different aspects on the same type of item. For instance, the price of the product and the rating of the product.
+
+![](https://raw.githubusercontent.com/Vanessacwy20/Capstone/main/1.jpg){width=50%}
+![](https://raw.githubusercontent.com/Vanessacwy20/Capstone/main/2.jpg){width=50%}
+
+
+In this tutorial, you would know more about how to make use of data to make decisions!
+
+## Data Manipulation
+
+### Introduction
+
+In this tutorial, we would simulate the scenario of an online store.
+
+Here is the preview of the database.
+There are in total three types data records:
+1. Registered user data
+2. Product data provided on the shop
+3. The details of order placed by different user  
+
+```{r, context="render", echo=FALSE}
+
+
+selectInput(inputId='SelectedTable', label = "Select table to show",
+            choices = c(
+              "Users" = "User",
+              "Products" = "Product",
+              "Orders" = "Order"
+           )
+)
+
+dataTableOutput("SelectedViewTable")
+
+```
+```{r, context="server"}
+
+output$SelectedViewTable <- renderDataTable({
+  ViewTable <- get(input$SelectedTable)
+  
+},
+          options = list(
+          pageLength = 5,
+          processing=FALSE,
+          scrollX=TRUE,
+          initComplete = I("function(settings, json) {}")
+
+))
+
+
+```
+
+
+
+### Way to display data
+
+To display the data in the format of a table, you can simply enter [The_name_of_the_table] into the code exercise and run the code.
+
+There are three tables:
+1. User
+2. Product
+3. Order
+
+You can try it out below!
+
+```{r Example1, exercise = TRUE}
+User
+```
+
+However, we may found that it is difficult to view the useful data when we display every single row of data out.
+
+If we have some kinds of condition set for the searching, it would be more easier to find the useful data.
+
+
+![A capscreen picture of an online shopping platform - Amazon](https://raw.githubusercontent.com/Vanessacwy20/Capstone/main/3.jpg){width=70%}
+
+
+In the above picture, there are several information assists us to search the product we want. For example, the keyword of the product, rating and price of the product. And also, we can sort the product based on some factors.
+
+### filter()
+
+In R, we can use filter() function to filter out the data that satisfy the required condition.
+
+Filter the useful data rows with conditions
+<pre>
+filter(Product, Product_Category == "women's clothing", Product_Price < 50, Product_Rating >= 4.5)
+</pre>
+
+```{r}
+filter(Product, Product_Category == "women's clothing", Product_Price < 50, Product_Rating >= 4.5)
+```
+
+For keywords filtering, we can use grepl() function.
+<pre>
+filter(Product, grepl("Hard Drive", Product_Name, fixed = TRUE))
+</pre>
+
+```{r}
+filter(Product, grepl("Hard Drive", Product_Name, fixed = TRUE))
+```
+
+
+### select()
+
+Select function can be used for only displaying some of the column out.
+
+1. Select columns "Product_Name,Product_Category,Product_Price,Product_Rating" out from Table Product
+<pre>
+df <- Product %>% select(Product_Name,Product_Category,Product_Price,Product_Rating)
+filter(df, Product_Category == "women's clothing", Product_Price < 50, Product_Rating >= 4.5)
+</pre>
+
+```{r}
+df <- Product %>% select(Product_Name,Product_Category,Product_Price,Product_Rating)
+filter(df, Product_Category == "women's clothing", Product_Price < 50, Product_Rating >= 4.5)
+```
+
+2. Select columns name start with "User" out from Table Order
+<pre>
+Order %>% select(starts_with("User"))
+</pre>
+
+```{r}
+Order %>% select(starts_with("User"))
+```
+
+3. Select columns name end with "ID" out from Table Order
+<pre>
+Order %>% select(ends_with("ID"))
+</pre>
+
+```{r}
+Order %>% select(ends_with("ID"))
+```
+
+4. Select columns by their index
+<pre>
+Order %>% select(1:3)
+</pre>
+
+```{r}
+Order %>% select(1:3)
+```
+
+With filter(), we can filter the data and select the useful column out!
+
+```{r Example2, exercise = TRUE}
+df <- Product %>% select(Product_Name,Product_Category,Product_Price,Product_Rating)
+filter(df, grepl("Short", Product_Name, fixed = TRUE), Product_Category == "women's clothing", Product_Price < 50, Product_Rating >= 3.0)
+```
+
+```{r, context="render", echo=FALSE}
+icon("pencil-alt")
+```
+Quick check!
+
+Search for all Mens clothing, with  (1) price lower than $100, and  (2) rating higher than 3.
+( Select Column  (1) Product_Name (2) Product_Category (3) Product_Price (4) Product_Rating )
+
+```{r Question1, exercise = TRUE}
+df <- Product %>% _______(__________)
+filter(___________)
+```
+
+```{r, context="render", echo=FALSE}
+icon("lightbulb")
+```
+Tips
+
+```{r, context="render", echo=FALSE}
+  verbatimTextOutput("Question1text")
+```
+```{r, context="server"}
+output$Question1text <- renderText({ Question1Text$ErrorLog })
+```
+
+
+### arrange()
+
+When the useful data are displayed, you may want to sort in a order that the most useful data would be displayed at the top.
+
+Function arrange() could be used for sorting.
+
+1. Sort by column "Product_Rating" 
+<pre>
+arrange(select(Product,Product_ID,Product_Rating),desc(Product_Rating))
+</pre>
+
+```{r}
+arrange(select(Product,Product_ID,Product_Rating),desc(Product_Rating))
+```
+
+2. Sort with multiple columns
+<pre>
+arrange(User,User_Gender,User_Name)
+</pre>
+
+```{r}
+arrange(User,User_Gender,User_Name)
+```
+
+### Merge()
+
+In order to handle data in different tables, merge() function could be used.
+
+
+1. Merage Table "Order" with "Product" and put in a new dataframe "new_df"
+<pre>
+new_df <- merge(x=Order,y=Product,by="Product_ID")
+</pre>
+
+```{r}
+new_df <- merge(x=Order,y=Product,by="Product_ID")
+```
+
+
+### Mutate()
+
+Mutate function can be used for adding new variable 
+
+1. Add new column "Total_Price" to Order
+<pre>
+new_df <- mutate(merge(x=Order,y=Product,by="Product_ID"), Total_Price = Product_Price * Product_Quantity)
+
+select(new_df,Order_ID, Product_Price, Product_Quantity, Total_Price)
+
+</pre>
+
+```{r}
+new_df <- mutate(merge(x=Order,y=Product,by="Product_ID"), Total_Price = Product_Price * Product_Quantity)
+
+select(new_df,Order_ID, Product_Price, Product_Quantity, Total_Price)
+```
+
+
+### Group By and Summarise
+
+You can also group by some of the data and summarise the column data of the same group.
+
+
+<div id="GroupByTableExample">
+```{r, context="render", echo=FALSE}
+selectInput(inputId='GroupByColumn', label = "Group By:",
+            choices = c(
+              "User_Name" = "User_Name",
+              "User_Address" = "User_Address",
+              "User_Country" = "User_Country",
+              "User_Gender" = "User_Gender"
+              
+           )
+)
+
+
+dataTableOutput("ProductSummaryTable")
+
+```
+
+
+
+```{r, context="server"}
+
+df1 <- merge(x = User, y = Order, by = "User_ID")
+
+AllData <- merge(x = df1, y = Product, by = "Product_ID")
+
+AllData$Total_Price <- with(AllData, Product_Quantity * Product_Price )
+
+AllData <- AllData %>%
+  separate(Order_Date, c("Order_DateYear", "Order_DateMonth","Order_DateDay"), "/")
+
+AllData <- AllData %>%
+  separate(Order_Time, c("Order_DateHour", "Order_DateMinutes","Order_DateSeconds"), ":")
+
+output$ProductSummaryTable <- renderDataTable({
+  OrderSummarise <- AllData %>% 
+    group_by(get(input$GroupByColumn)) %>%
+    summarise(n = n(), mean = mean(Total_Price), min = min(Total_Price), max = max(Total_Price))
+  
+},
+          options = list(
+          pageLength = 5,
+          processing=FALSE,
+          scrollX=TRUE,
+          initComplete = I("function(settings, json) {
+          
+          CurrentColumnName = $('#GroupByColumn option:selected').text()
+                         
+$('#ProductSummaryTable tfoot tr').children().eq(0).children().attr('placeholder',CurrentColumnName);
+                          $($($($('#ProductSummaryTable').children().children()[1]).children().children().children()[0]).children().children()[0]).html(CurrentColumnName) 
+                          
+                          $($($($('#ProductSummaryTable').children().children()[1]).children().children().children()[0]).children().children()[1]).html('Number of Records')
+                          
+                          $('#ProductSummaryTable tfoot tr').children().eq(1).children().attr('placeholder','Number of Records');
+                          
+                          }")
+
+))
+```
+
+</div>
+
+1. Finding the total number of orders of the product
+<pre>
+new_df <- merge(x=Order,y=Product,by="Product_ID")
+
+new_df %>%
+group_by(Product_ID) %>%
+summarise(No_Of_Order = n()) 
+
+
+</pre>
+
+```{r}
+new_df <- merge(x=Order,y=Product,by="Product_ID")
+
+new_df %>%
+group_by(Product_ID) %>%
+summarise(No_Of_Order = n()) 
+
+```
+
+2. Find the maximum product price of each category
+<pre>
+Product %>%
+group_by(Product_Category) %>%
+summarise(Max_Price = max(Product_Price)) 
+</pre>
+
+```{r}
+Product %>%
+group_by(Product_Category) %>%
+summarise(Max_Price = max(Product_Price)) 
+
+```
+
+```{r, context="render", echo=FALSE}
+icon("pencil-alt")
+``` 
+Quick check!
+
+
+Search for all User's total expenditure and sort by total expenditure, show the name of the user and the total expenditure 
+
+
+```{r Question2, exercise = TRUE}
+df1 <- merge(_________) # Merge Table "Order" and "User"
+df2 <- merge(_________) # Merge "df1" and Table "Product"
+
+df3 <- select(mutate(df2,Total_Price = __________),________,Total_Price)
+
+arrange(df3,_______)       
+
+```
+
+```{r, context="render", echo=FALSE}
+icon("lightbulb")
+```
+Tips
+
+```{r, context="render", echo=FALSE}
+  verbatimTextOutput("Question2text")
+```
+```{r, context="server"}
+output$Question2text <- renderText({ Question2Text$ErrorLog })
+```
+
+
+## Data Visualization
+Other than displaying data with tables, graphs are often used in data visualization.
+
+### Understand more about graphs
+
+Here is some videos about data visualization of different graphs.
+
+![](https://youtu.be/C07k0euBpr8){width="90%"}
+
+![](https://youtu.be/qGaIB-bRn-A){width="90%"}
+
+
+With different kinds of graphs, the data visualization could be advanced.
+
+In the below example, the data is displayed in the form of a table.
+However, the difference could be showed in a more clear way with graphs.
+You can select different fields in the below example to see the difference between table and graph.
+
+```{r, context="render", echo=FALSE}
+selectInput(inputId='GroupByColumn2', label = "Column to be summarized:",
+            choices = c(
+              "Product_Price" = "Product_Price",
+              "Product_Rating" = "Product_Rating",
+              "Product_RatingCount" = "Product_RatingCount"
+              
+           )
+)
+
+dataTableOutput("GroupByTable2")
+
+selectInput(inputId='SelectY', label = "Column to be summarized:",
+            choices = c(
+              "n" = "n",
+              "Mean" = "Mean",
+              "Max" = "Max",
+              "Min" = "Min"
+              
+           )
+)
+
+plotOutput(outputId="GroupByTable2Graph")
+
+
+selectInput(inputId='SelectScale', label = "value of X-axis:",
+            choices = c(
+              "Year" = "Year",
+              "Month" = "Month",
+              "Date" = "Date",
+              "Time" = "Time"
+              
+           )
+)
+
+plotOutput(outputId="LineGraph")
+
+
+```
+
+
+```{r, context="server"}
+
+
+output$GroupByTable2 <- renderDataTable({
+  ProductGroupBy <- AllData %>% 
+    group_by(Product_Category) %>%
+    summarise(n = n(), mean = mean(get(input$GroupByColumn2)), min = min(get(input$GroupByColumn2)), max = max(get(input$GroupByColumn2)))
+  
+},
+          options = list(
+          pageLength = 5,
+          processing=FALSE,
+          scrollX=TRUE,
+          initComplete = I("function(settings, json) {
+          
+          
+                          }")
+
+))
+
+output$GroupByTable2Graph<-renderPlot({ 
+  
+  if (input$SelectY == "n"){
+    ProductGroupBy <- AllData %>% 
+      group_by(Product_Category) %>%
+      summarise(y = n())
+  }else if (input$SelectY == "Mean"){
+    ProductGroupBy <- AllData %>% 
+      group_by(Product_Category) %>%
+      summarise(y = mean(get(input$GroupByColumn2)))
+  }else if (input$SelectY == "Max"){
+    ProductGroupBy <- AllData %>% 
+      group_by(Product_Category) %>%
+      summarise(y = max(get(input$GroupByColumn2)))
+  }else if (input$SelectY == "Min"){
+    ProductGroupBy <- AllData %>% 
+      group_by(Product_Category) %>%
+      summarise(y = min(get(input$GroupByColumn2)))
+  }
+    
+    ggplot(ProductGroupBy, aes(reorder(Product_Category, y))) +
+    geom_bar(aes(weight = y), fill = "#8CCCA6") + 
+    coord_flip() +
+    xlab(input$GroupByColumn2) +
+    ylab(paste(input$SelectY , " of ", input$GroupByColumn2)) +
+    theme_bw(base_size = 16)
+    
+  })
+
+output$LineGraph <- renderPlot({
+  if(input$SelectScale == "Year"){
+    GroupBy <- AllData %>% 
+      group_by(Order_DateYear) %>%
+      summarise(n = n())
+  }else if(input$SelectScale == "Month"){
+    GroupBy <- AllData %>% 
+      group_by(Order_DateMonth) %>%
+      summarise(n = n())
+  }else if(input$SelectScale == "Date"){
+    GroupBy <- AllData %>% 
+      group_by(Order_DateDay) %>%
+      summarise(n = n())
+  }else if(input$SelectScale == "Time"){
+    GroupBy <- AllData %>% 
+      group_by(Order_DateHour) %>%
+      summarise(n = n())
+  }
+  
+    colnames(GroupBy)[1] <- "X"
+  
+    PlotGraph <- ggplot(GroupBy, aes(X,n)) +  geom_line(aes(group=1)) + geom_point() 
+    
+    
+    PlotGraph + labs(x =input$SelectScale, y = "Number of orders")
+  })
+
+
+
+
+
+```
+
+
+
+
+
+
+
+## Exercise
+
+```{r, context="render", echo=FALSE}
+actionButton("RestartExercise",
+class = "btn btn-primary",
+label = "Restart Exercise")
+fluidRow(column(5, verbatimTextOutput("exerciseID")),
+          column(3, verbatimTextOutput("exerciseType")),
+         column(2,verbatimTextOutput("exerciseResult")),
+         column(2,actionButton("RefreshExerciseView","", icon = icon("sync")
+         ))
+          
+         )
+
+```
+
+<div class="talk-bubble round tri-right left-top ">
+  <div class="talktext">
+```{r, context="render", echo=FALSE}
+textOutput("exerciseText")
+```
+  </div>
+</div>
+
+```{r, context="render", echo=FALSE}
+  uiOutput("MCQ")
+
+```
+
+```{r Exercise, exercise = TRUE}
+
+```
+
+```{r, context="render", echo=FALSE}
+
+
+ #fluidRow(column(6,   verbatimTextOutput("pivotRefresh")),
+  #        column(6, rpivotTableOutput("mypivot") ))
+
+
+
+  fluidRow(column(12, rpivotTableOutput("mypivot")))
+ 
+  actionButton("NextQ",
+    class = "btn btn-primary",
+    label = "Next Question")
+  
+  
+  
+```
+```{r, context="server"}
+
+observeEvent(input$NextQ,{
+ output$exerciseResult <- renderText({
+
+    QuestionResult <- CurrentQuestion$Result
+  
+  })
+})
+
+ 
+observeEvent(input$NextQ,{
+
+  
+  if (CurrentQuestion$Type == "PivotTable"){
+   
+      # Apply a function to all keys, to get corresponding values
+        CurrentQuestion$Answer <- ""
+        
+        CurrentQuestion$Answer <- paste(CurrentQuestion$Answer,"cols", " :", toString(input$myPivotData[["cols"]]), "; ")
+        
+        CurrentQuestion$Answer <- paste(CurrentQuestion$Answer,"rows", " :", toString(input$myPivotData[["rows"]]), "; ")
+        
+        CurrentQuestion$Answer <- paste(CurrentQuestion$Answer,"vals", " :", toString(input$myPivotData[["vals"]]), "; ")
+      
+        CurrentQuestion$Answer <- paste(CurrentQuestion$Answer,"aggregatorName", " :", toString(input$myPivotData[["aggregatorName"]]), "; ")
+        
+        CurrentQuestion$Answer <- paste(CurrentQuestion$Answer,"rendererName", " :", toString(input$myPivotData[["rendererName"]]), "; ")
+        
+        
+  }
+  
+  if (CurrentQuestion$Type == "MC"){
+    CurrentQuestion$Answer <- input$MCQ_Selection
+  }
+  
+        
+  Go_To_Next_Q(CurrentQuestion$No)
+
+      
+})
+
+
+observeEvent(input$RestartExercise,{
+    Reset_Quiz()
+})
+
+output$exerciseID <- renderText({
+
+  QuestionNumber <- CurrentQuestion$No
+  
+})
+
+output$exerciseType <- renderText({
+
+  QuestionType <- CurrentQuestion$Type
+  
+})
+
+output$exerciseText <- renderText({
+
+  QuestionText <- CurrentQuestion$Text
+  
+})
+
+output$MCQ <- renderUI({
+
+    # 1.3. UI element
+    radioButtons(
+      "MCQ_Selection", " ", 
+      choices = strsplit(CurrentQuestion$MCList , ",")[[1]]
+      )
+  })
+
+
+
+output$pivotRefresh <- renderText({
+
+cnames <- list("cols","rows","vals", "exclusions","inclusions", "aggregatorName", "rendererName")
+# Apply a function to all keys, to get corresponding values
+allvalues <- lapply(cnames, function(name) {
+  item <- input$myPivotData[[name]]
+  if (is.list(item)) {
+    list_to_string(item, name)
+  } else {
+    paste(name, item, sep=" = ")
+  }
+})
+paste(allvalues, collapse = "\n")
+})
+
+output$mypivot = renderRpivotTable({
+    rpivotTable(
+      AllData,
+
+      onRefresh=htmlwidgets::JS("function(config) { Shiny.onInputChange('myPivotData', config); }")
+      )
+  })
+
+
+
+
+```
+
+
+## Tools
+
+```{r, echo = FALSE}
+br()
+tags$h3("Data Model Diagram")
+graph <- dm_create_graph(dm, rankdir = "BT")
+dm_render_graph(graph)
+br()
+tags$h3("Code Console")
+
+```
+
+```{r Tool, exercise = TRUE}
+
+```
+
+
+```{r, context="render", echo=FALSE}
+br()
+
+tags$h3("View database Tables")
+selectInput(inputId='ToolSelectedTable', label = "Select table to show",
+            choices = c(
+              "Users" = "User",
+              "Products" = "Product",
+              "Orders" = "Order"
+           )
+)
+
+dataTableOutput("ToolSelectedViewTable")
+
+```
+```{r, context="server"}
+
+output$ToolSelectedViewTable <- renderDataTable({
+  ViewTable <- get(input$ToolSelectedTable)
+  
+},
+          options = list(
+          pageLength = 5,
+          processing=FALSE,
+          scrollX=TRUE,
+          initComplete = I("function(settings, json) {}")
+
+))
+
+
+```
+
+```{r, context="render", echo=FALSE}
+br()
+tags$h3("View Pivot Table")
+selectInput(inputId='SeletPivotSet', label = "PivotTable Data Set",
+                                        choices = c(
+                                          "User+Order+Product" = "AllData",
+                                          "User" = "User",
+                                          "Order" = "Order",
+                                          "Product" = "Product"
+                                          
+                                       )
+                            )
+                          
+
+```
+
+```{r, context="render", echo=FALSE}
+  fluidRow(column(12, rpivotTableOutput("PivotTable")))
+```
+
+```{r, context="server"}
+output$PivotTable = renderRpivotTable({
+    rpivotTable(
+      if (input$SeletPivotSet == "AllData"){
+        AllData
+      }else if (input$SeletPivotSet == "User"){
+        User
+      }else if (input$SeletPivotSet == "Product"){
+        Product
+      }else if (input$SeletPivotSet == "Order"){
+        Order
+      },
+
+      onRefresh=htmlwidgets::JS("function(config) { Shiny.onInputChange('myPivotData', config); }")
+      )
+  })
+
+
+```
+
+## Dashboard
+
+<div style="float: right;">
+```{r, context="render", echo=FALSE}
+actionButton("RefrestStudentsExerciseGradesTable", icon = icon("sync"),
+            class = "btn btn-primary",
+            label = ""
+            )
+             
+             
+```
+</div>
+
+
+```{r, context="render", echo=FALSE}
+
+ br()
+
+tabsetPanel(
+    tabPanel("Statics", 
+             br(),
+            tabsetPanel(
+               tabPanel("Score Board",
+              tags$h3("Student Ranking - Top 3"),
+                dataTableOutput("Best5GradeGroupByStudent"),
+              
+              br(),
+                tags$h3("All Student Ranking"),
+                dataTableOutput("BestGradeGroupByStudent")
+              
+               ),
+              tabPanel("Submission Status",
+              br(),
+                tags$h3("Submission status of students"),
+               plotOutput("SubmittedPercentageGroupByStudent"),
+              
+              
+                br(),
+                tags$h3("Students without submission record"),
+               dataTableOutput("NeedSubmissionList")
+             
+                
+              ),
+             tabPanel("Questions Statistics",
+                br(),
+                tags$h3("Average marks obtained by students in each questions"),
+                plotOutput("QuestionsAnalysisBar")
+                
+             )
+              )
+             
+             ),
+    tabPanel("Quick Check Log", 
+             br(),
+             tags$h3("Quick check Submitted answers"),
+             
+             dataTableOutput("StudentsGradesTable")
+             
+            ),
+    
+    tabPanel("Exercise Log", 
+             br(),
+             
+             tabsetPanel(
+               tabPanel("Answer Submitted",
+                br(),
+                titlePanel("Answer submitted record of each questions"),
+                 sidebarLayout(
+                    sidebarPanel(
+                      numericInput("QuestionExerciseLog", "Question:", 
+                                   1, min = 1, max =  100),verbatimTextOutput("value")
+                      
+                    ),
+                    mainPanel(
+                      dataTableOutput("QuestionsAnalysisFilter")
+                    )
+                 )
+              ),
+              tabPanel("Answer Log of All Students", 
+                       br(),
+                       tags$h3("All Answer Log"),
+                dataTableOutput("StudentsExerciseGradesTable")
+              ),
+              tabPanel("Submission record",
+                       br(),
+                       tags$h3("Submission record"),
+                dataTableOutput("GradeGroupByStudent")
+              )
+              
+             )
+             
+             )
+    
+
+
+          
+  )
+
+
+
+
+
+
+
+
+```
+```{r, context="server"}
+
+
+observeEvent(input$RefrestStudentsExerciseGradesTable,{
+    RefreshExerciseTable()
+})
+
+
+output$StudentsGradesTable <- renderDataTable({
+  StudentsGrades <- ExcelData$StudentMarks
+  
+},
+          options = list(
+          pageLength = 5,
+          processing=FALSE,
+          scrollX=TRUE,
+          initComplete = I("function(settings, json) {}")
+
+))
+
+output$StudentsExerciseGradesTable <- renderDataTable({
+  StudentsExerciseGrades <- ExcelData$StudentExerciseMarks
+  
+},
+          options = list(
+          pageLength = 5,
+          processing=FALSE,
+          scrollX=TRUE,
+          initComplete = I("function(settings, json) {}")
+
+))
+
+output$GradeGroupByStudent <- renderDataTable({
+  StudentsExerciseGrades <- ExcelData$StudentExerciseMarks %>%
+                                  group_by(ExerciseID) %>%
+                                  summarise(Marks = sum(Marks))
+  
+  StudentsExerciseGrades1 <- StudentsExerciseGrades %>%
+                  separate(ExerciseID, c("User", "StartingTime"), "_")
+  
+  
+},
+          options = list(
+          pageLength = 5,
+          processing=FALSE,
+          scrollX=TRUE,
+          initComplete = I("function(settings, json) {}")
+
+))
+
+output$BestGradeGroupByStudent <- renderDataTable({
+  StudentsExerciseGrades <- ExcelData$StudentExerciseMarks %>%
+                                  group_by(ExerciseID) %>%
+                                  summarise(Marks = sum(Marks))
+  
+  StudentsExerciseGrades1 <- StudentsExerciseGrades %>%
+                  separate(ExerciseID, c("User", "StartingTime"), "_")
+  
+  StudentsExerciseGrades2 <- StudentsExerciseGrades1 %>%
+                                  group_by(User) %>%
+                                  summarise(Marks = max(Marks))
+  
+ 
+   arrange(StudentsExerciseGrades2,-Marks)
+},
+          options = list(
+          pageLength = 5,
+          processing=FALSE,
+          scrollX=TRUE,
+          initComplete = I("function(settings, json) {}")
+
+))
+
+output$Best5GradeGroupByStudent <- renderDataTable({
+  StudentsExerciseGrades <- ExcelData$StudentExerciseMarks %>%
+                                  group_by(ExerciseID) %>%
+                                  summarise(Marks = sum(Marks))
+  
+  StudentsExerciseGrades1 <- StudentsExerciseGrades %>%
+                  separate(ExerciseID, c("User", "StartingTime"), "_")
+  
+  StudentsExerciseGrades2 <- StudentsExerciseGrades1 %>%
+                                  group_by(User) %>%
+                                  summarise(Marks = max(Marks))
+  
+ 
+   head(arrange(StudentsExerciseGrades2,-Marks),3)
+},
+          options = list(
+          pageLength = 5,
+          processing=FALSE,
+          scrollX=TRUE,
+          initComplete = I("function(settings, json) {}")
+
+))
+
+
+output$QuestionsAnalysisBar <- renderPlot({
+    
+ QuestionsAnalysis1 <- ExcelData$StudentExerciseMarks %>%
+                                 group_by(QuestionNo) %>%
+                                 summarise(Avg_Marks = mean(Marks))
+ 
+
+  QuestionsAnalysis2 <- arrange(QuestionsAnalysis1,QuestionNo)
+  
+  ggplot(QuestionsAnalysis2, aes(reorder(QuestionNo, Avg_Marks))) +
+  geom_bar(aes(weight = Avg_Marks), fill = "#8CCCA6") + 
+  coord_flip() +
+  xlab("Questions") +
+  ylab("Avg. Marks obtained") +
+  theme_bw(base_size = 16)
+                                 
+                                 
+    
+  })
+
+output$QuestionsAnalysis <- renderDataTable({
+  QuestionsAnalysis1 <- ExcelData$StudentExerciseMarks %>%
+                                 group_by(QuestionNo) 
+                                 summarise(Avg_Marks = mean(Marks))
+  
+ 
+   arrange(QuestionsAnalysis1,-Marks)
+},
+          options = list(
+          pageLength = 5,
+          processing=FALSE,
+          scrollX=TRUE,
+          initComplete = I("function(settings, json) {}")
+
+))
+
+
+output$QuestionsAnalysisFilter <- renderDataTable({
+  
+  SelectQuestionNo = gsub(" ", "", paste("Question",input$QuestionExerciseLog))
+  
+  
+  StudentsExerciseGrades <- select(filter(ExcelData$StudentExerciseMarks,QuestionNo==SelectQuestionNo) ,Answer, Marks)
+  
+},
+          options = list(
+          pageLength = 5,
+          processing=FALSE,
+          scrollX=TRUE,
+          initComplete = I("function(settings, json) {}")
+
+), editable = TRUE)
+
+  
+  
+output$SubmittedPercentageGroupByStudent <- renderPlot({
+  StudentsExerciseGrades <- ExcelData$StudentExerciseMarks %>%
+                                  group_by(ExerciseID) %>%
+                                  summarise(Marks = sum(Marks))
+  
+  StudentsExerciseGrades1 <- StudentsExerciseGrades %>%
+                  separate(ExerciseID, c("User", "StartingTime"), "_")
+  
+  StudentsExerciseGrades2 <- StudentsExerciseGrades1 %>%
+                                  group_by(User) 
+  
+   All_UserData <- user_base
+   Standard_UserData <- as_data_frame(All_UserData[All_UserData[,"permissions"] == "standard",]["user"])
+   Standard_UserList <- list()
+   Completed <- 0 
+   NotCompleted <- 0
+   for (i in 1:nrow(Standard_UserData)){
+   
+   x <- Standard_UserData[i,]
+
+     if(nrow(StudentsExerciseGrades2[StudentsExerciseGrades2[,"User"] == paste(x,""),])!=0){
+       Completed <- Completed + 1
+     }else{
+    NotCompleted <- NotCompleted + 1
+     }
+   }
+
+   
+   df_Pcent <- data.frame(
+     group = c("Completed","NotCompleted"),
+     value = c(Completed,NotCompleted)
+   )
+  
+
+  
+    ggplot(df_Pcent, aes(x="", y=value, fill=group)) +
+    geom_bar(stat="identity", width=1) +
+    coord_polar("y", start=0) + scale_fill_brewer(palette = "Pastel1")
+    
+    
+ 
+})
+
+output$NeedSubmissionList <- renderDataTable({
+  
+StudentsExerciseGrades <- ExcelData$StudentExerciseMarks %>%
+                                  group_by(ExerciseID) %>%
+                                  summarise(Marks = sum(Marks))
+  
+  StudentsExerciseGrades1 <- StudentsExerciseGrades %>%
+                  separate(ExerciseID, c("User", "StartingTime"), "_")
+  
+  StudentsExerciseGrades2 <- StudentsExerciseGrades1 %>%
+                                  group_by(User) 
+  
+   All_UserData <- user_base
+   Standard_UserData <- as_data_frame(All_UserData[All_UserData[,"permissions"] == "standard",])
+   Standard_UserList <- list()
+   Completed <- 0 
+   NotCompleted <- 0
+   
+   
+   mat = matrix(ncol = 0, nrow = 0)
+  
+   NotCompleteList=data.frame(mat)
+   
+   
+   for (i in 1:nrow(Standard_UserData)){
+   
+   x <- Standard_UserData[i,]["user"]
+
+     if(nrow(StudentsExerciseGrades2[StudentsExerciseGrades2[,"User"] == paste(x,""),])==0){
+       df <- as_data_frame(Standard_UserData[i,])
+       df$password <- NULL
+       df$permissions <- NULL
+       
+       NotCompleteList <- rbind(NotCompleteList, df)
+     }
+   }
+   
+   NotCompleteList
+},
+          options = list(
+          pageLength = 5,
+          processing=FALSE,
+          scrollX=TRUE,
+          initComplete = I("function(settings, json) {}")
+
+))
+
+
+```
+
+
+## Admin Tools
+
+<div style="float: right;">
+```{r, context="render", echo=FALSE}
+actionButton("AdminToolHelp", class = "btn btn-primary",
+            label = "", icon = icon("question"))
+```
+</div>
+
+```{r, context="server"}
+observeEvent(input$AdminToolHelp, {
+      showModal(modalDialog(
+        title = "User Guide",
+        img(src='https://raw.githubusercontent.com/Vanessacwy20/Capstone/main/4.jpg'
+            , align = "center"),
+         size = "l"
+      ))
+    })
+```
+
+```{r, context="render", echo=FALSE}
+actionButton("PivotGenerateAnswer", "Generate Answer")
+fluidRow(column(12, rpivotTableOutput("AdminPivotTableTool")))
+verbatimTextOutput("PivotAnswerText")
+
+br()
+
+```
+
+
+```{r CodeAnswerGenerator, exercise = TRUE}
+
+```
+
+```{r, context="render", echo=FALSE}
+textOutput("CodeAnswerText")
+```
+
+
+```{r, context="server"}
+output$AdminPivotTableTool = renderRpivotTable({
+    rpivotTable(
+      AllData,
+
+      onRefresh=htmlwidgets::JS("function(config) { Shiny.onInputChange('ShowPivotData', config); }")
+      )
+  })
+
+
+ 
+observeEvent(input$PivotGenerateAnswer,{
+
+   GenerateAnswer$Pivot <- ""
+  
+        
+    GenerateAnswer$Pivot <- paste(GenerateAnswer$Pivot,"cols", " :", toString(input$ShowPivotData[["cols"]]), "; ")
+        
+       GenerateAnswer$Pivot <- paste(GenerateAnswer$Pivot,"rows", " :", toString(input$ShowPivotData[["rows"]]), "; ")
+        
+       GenerateAnswer$Pivot <- paste(GenerateAnswer$Pivot,"vals", " :", toString(input$myPivotData[["vals"]]), "; ")
+      
+       GenerateAnswer$Pivot <- paste(GenerateAnswer$Pivot,"aggregatorName", " :", toString(input$myPivotData[["aggregatorName"]]), "; ")
+        
+       GenerateAnswer$Pivot <- paste(GenerateAnswer$Pivot,"rendererName", " :", toString(input$myPivotData[["rendererName"]]), "; ")
+       
+       
+        
+  
+})
+
+ output$PivotAnswerText <- renderText({ 
+     GenerateAnswer$Pivot
+  })
+ 
+ output$CodeAnswerText <- renderText({ 
+     GenerateAnswer$Code
+  })
+ 
+ 
+
+```
+
+
+
+
+```{js}
+
+
+var TutorTabIndex = ["1","2","3","4","5"]
+
+$("#login-error").hide()
+
+
+
+/* */
+$("#login-panel .btn").click(function(){
+  setTimeout(function (){
+    
+    if($("#sidebarpanel p")[0].innerText == "You have admin permission"){
+      
+      var topicTabs = $(" .topic")
+      
+      for(i=0;i<topicTabs.length;i++){
+        if ($(topicTabs[i]).hasClass("current") == false){
+          $(topicTabs[i]).show()
+          if(TutorTabIndex.includes(topicTabs[i].attributes.index.value)){
+            $(topicTabs[i]).hide()
+          }
+          
+        }
+      }
+      
+      
+    }else{
+    
+      var topicTabs = $(".topic")
+      
+      for(i=0;i<topicTabs.length;i++){
+        if ($(topicTabs[i]).hasClass("current") == false){
+          $(topicTabs[i]).hide()
+          if(TutorTabIndex.includes(topicTabs[i].attributes.index.value)){
+            $(topicTabs[i]).show()
+          }
+          
+        }
+      }
+    }
+              
+  }, 1000);
+    
+})
+
+setTimeout(function (){
+  var topicTabs = $(".topic")
+  
+  for(i=0;i<topicTabs.length;i++){
+    if ($(topicTabs[i]).hasClass("current") == false){
+      $(topicTabs[i]).hide()
+    }
+  }
+  
+  $("#section-login .topicActions").hide()
+}, 1000);
+
+
+$("#logout-button").click(function(){
+    
+  var topicTabs = $(" .topic")
+  
+  for(i=0;i<topicTabs.length;i++){
+    if ($(topicTabs[i]).hasClass("current") == false){
+      $(topicTabs[i]).hide()
+    }
+  }
+      
+      
+});
+
+/* */
+setTimeout(function (){
+$( " .topic" ).click(function() {
+  setTimeout(function (){
+    $("#tutorial-exercise-Exercise-input").parent().hide()
+    $("#mypivot").parent().parent().hide()
+    $("#MCQ_Selection").hide()
+  
+    if($( "#exerciseType" ).text() == "Coding"){
+      $("#tutorial-exercise-Exercise-input").parent().show()
+    }
+    
+    if($( "#exerciseType" ).text() == "PivotTable"){
+      $("#mypivot").parent().parent().show()
+    }
+    
+    if($( "#exerciseType" ).text() == "MC"){
+      $("#MCQ_Selection").show()
+
+    }
+  }, 200);
+  
+  
+  $("#section-exercise .topicActions").hide()
+  $("#section-tools .topicActions").hide()
+  $("#section-admin .topicActions").hide()
+})
+}, 500);
+
+
+$("#RestartExercise").hide()
+
+
+$( "#NextQ" ).click(function() {
+  $(".tutorial-exercise .tutorial-exercise-output").html("")
+  $(".tutorial-exercise .ace_line").html("")
+  ChangeQuestionField();
+  
+});
+
+$("#RestartExercise").click(function() {
+  ChangeQuestionField();
+  $( "#NextQ" ).show()
+  $("#RestartExercise").hide()
+});
+
+$("#RefreshExerciseView").click(function() {
+setTimeout(function (){
+    $("#tutorial-exercise-Exercise-input").parent().hide()
+    $("#mypivot").parent().parent().hide()
+    $("#MCQ_Selection").hide()
+  
+    if($( "#exerciseType" ).text() == "Coding"){
+      $("#tutorial-exercise-Exercise-input").parent().show()
+    }
+    
+    if($( "#exerciseType" ).text() == "PivotTable"){
+      $("#mypivot").parent().parent().show()
+    }
+    
+    if($( "#exerciseType" ).text() == "MC"){
+      $("#MCQ_Selection").show()
+
+    }
+  }, 200);
+});
+
+function ChangeQuestionField(){
+setTimeout(function (){
+  $("#tutorial-exercise-Exercise-input").parent().hide()
+  $("#mypivot").parent().parent().hide()
+  $("#MCQ_Selection").hide()
+  
+
+  if($( "#exerciseType" ).text() == "Coding"){
+    $("#tutorial-exercise-Exercise-input").parent().show()
+  }
+  
+  if($( "#exerciseType" ).text() == "PivotTable"){
+    $("#mypivot").parent().parent().show()
+  }
+  
+  if($( "#exerciseType" ).text() == "MC"){
+    $("#MCQ_Selection").show()
+  }
+  
+  
+  if($( "#exerciseType" ).text() == "End"){
+    $("#mypivot").parent().parent().hide()
+    $("#tutorial-exercise-Exercise-input").parent().hide()
+    $( "#NextQ" ).hide()
+    $("#RestartExercise").show()
+    
+  }
+  
+}, 1000);
+}
+
+
+
+```
+
