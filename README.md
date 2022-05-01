@@ -17,12 +17,26 @@ This is an interactive learning application for data science.
 ### Docker
 
 A customized docker image is used in this project.
-* built docker file
+* build docker image
   ```sh
   docker build . -t myrshiny
   ```
+  
+## Activate the application
+### On Rstudio
+1.  Install the required package
+2.  Open the rmarkdown file in Rstudio
+3.  Click Run Document
 
-### Development
+### On Docker
+1.  Build docker image
+2.  run docker
+    ```sh
+    docker run -p 3838:3838 -v ~ [your_project_folder_path]:/srv/shiny-server/ myrshiny
+    ```
+3.  Visit http://localhost:3838/
+
+## Development
 
 1. Recording the activity of the learnr code console
 
