@@ -32,7 +32,7 @@ A customized docker image is used in this project.
 1.  Build docker image
 2.  run docker
     ```sh
-    docker run -p 3838:3838 -v ~ [your_project_folder_path]:/srv/shiny-server/ myrshiny
+    docker run -p 3838:3838 -v ~ [your_project_folder_path]/index:/srv/shiny-server/ myrshiny
     ```
 3.  Visit http://localhost:3838/
 
